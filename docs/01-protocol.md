@@ -545,6 +545,8 @@ The checksum is arithmetic and holds for every captured frame, including the hea
 | `0x0D` | key | 4-byte record | Fn-layer key patch |
 | `0x05` | 0 | fields 0-13 + `AA 55` | lighting, §11 |
 | `0x14` | frame | 28-byte slice of the 576-byte table | per-key colours, §11 |
+| `0x10` | frame | 28-byte slice of the 576-byte table | a whole key layer. **The page does not send this.** |
+| `0x12` | frame | same shape as `0x10` | a whole key layer; carried the Fn override once. **The page does not send this.** |
 | `0x0C` | 0 | fields 0-13 + `AA 55` | clock, §9 |
 | `0x07` | 0 | fields 0-13 + `AA 55` | device settings, §12 |
 | `0x20` | 0 | `00` | heartbeat, every 15 s |
@@ -556,17 +558,25 @@ directly. A key patch carries the same 4-byte record as the wired table (`02 <mo
 
 ### What the captures show
 
-- **Single key at a time for the keymap.** The vendor app never sends the 576-byte keymap table
-  over the dongle. One `0x03` write changes one key and takes effect immediately, with no commit.
-- **Per-key colours are the exception.** `0x14` carries the 576-byte colour table in 21 frames:
-  twenty of 28 bytes and a last one of 16, `AA 55` included, with the frame number in byte 3. A
-  light record with mode `0x80` precedes it. Captured on 14 Nov 2026
+- **Single key at a time for the keymap.** One `0x03` write changes one key and takes effect
+  immediately, with no commit. That is the path the page uses, and Test 20 sent 81 of them in a row
+  to restore a whole layer.
+- **The vendor also sends whole layers.** `0x10` and `0x12` carry the same 576-byte table as `0x14`:
+  21 frames of 28 bytes, the frame number in byte 3, `AA 55` at the end. Both appear in
+  `dongle-fn.log` and `dongle-settings.log`. In the second, the `0x12` table held `56:03E20000`, the
+  Fn override that run was undoing, and the `0x10` table was empty. The page sends neither command,
+  and which layer each one means is not settled: no capture changes one layer on its own. Every
+  frame is decoded in `re/captures/dongle-records.txt` in the private lab.
+- **Per-key colours use the same frame shape.** `0x14` carries the 576-byte colour table in 21
+  frames: twenty of 28 bytes and a last one of 16, `AA 55` included, with the frame number in byte 3.
+  A light record with mode `0x80` precedes it. Captured on 14 Nov 2026
   (`dongle-perkey-colour.log`), with the same four-byte records as the wired table.
 - **The layer is the command.** `0x03` for the top layer, `0x0D` for Fn; the index stays the
   physical key. Fn + A to Mute was `0D 04 38 03 E2 00 00`.
 - **No replies to patches.** Two key changes produced no input report. The vendor app does not
   wait for one. The heartbeat and the clock write did echo.
-- **Init and heartbeat.** `02 00 00` at connect and `20 01 00` every fifteen seconds. The receiver
+- **Init and heartbeat.** `02 00 00` at connect and again after an idle spell, then `20 01 00` every
+  fifteen seconds; the app re-sends the clock after each init. The receiver
   needs both before it accepts a record: on 3 Nov 2026 the same light frame did nothing until the
   page sent init and a heartbeat first, and applied immediately once it did.
 - **The link goes quiet.** The vendor app never leaves more than fifteen seconds between heartbeats,
