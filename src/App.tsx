@@ -46,9 +46,16 @@ import {
   type StorageLike,
 } from '@/lib/editor';
 import { hex } from '@/lib/format';
-import { HidClient, STATUS, TransferService, formatClock, isTransportFailed } from '@/lib/hid';
+import {
+  HidClient,
+  TransferService,
+  classifySteps,
+  classifyTransfer,
+  formatClock,
+} from '@/lib/hid';
 import { buildTimePacket } from '@/lib/hid/time';
 import { WirelessClient } from '@/lib/hid/wireless';
+import { useBusyLock } from '@/features/send/useBusyLock';
 import { FN_LOCKED, buildTable } from '@/lib/keymap';
 import {
   buildLightRecord,
@@ -132,8 +139,7 @@ export function App() {
     }
   }, [state, storage, log]);
   const device = useDevice({ log });
-  const [busy, setBusy] = useState(false);
-  const busyRef = useRef(false);
+  const { busy, isBusy, run: runLocked, set: setLockBusy } = useBusyLock();
   const storageWarning = useRef(false);
   const [confirming, setConfirming] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -194,85 +200,81 @@ export function App() {
         notify.warn('Connect the keyboard first.');
         return false;
       }
-      if (busyRef.current) return false;
 
-      busyRef.current = true;
-      setBusy(true);
+      const sent = await runLocked(async () => {
+        try {
+          const table = buildTable(rowsToSend, { layerFn: layer === 'fn' });
 
-      try {
-        const table = buildTable(rowsToSend, { layerFn: layer === 'fn' });
+          if (wireless) {
+            // One patch per key; the receiver applies them as they arrive and
+            // sends nothing back, so `applied` moves on a send, not a reply.
+            const patches = pendingKeyPatches(rowsToSend, table);
+            const count = await wireless.sendKeys(layer, patches);
 
-        if (wireless) {
-          // One patch per key; the receiver applies them as they arrive and
-          // sends nothing back, so `applied` moves on a send, not a reply.
-          const patches = pendingKeyPatches(rowsToSend, table);
-          const sent = await wireless.sendKeys(layer, patches);
+            if (count === 0) {
+              log('Nothing to send.', 'warn');
+              return false;
+            }
 
-          if (sent === 0) {
-            log('Nothing to send.', 'warn');
+            dispatch({ type: 'replace', state: afterState });
+            log(
+              `Sent ${count} key change${count === 1 ? '' : 's'} over 2.4 GHz. The keyboard does not confirm them.`,
+              'ok',
+            );
+            notify.warn(
+              `${count} key change${count === 1 ? '' : 's'} sent over 2.4 GHz. The keyboard does not confirm it.`,
+            );
+            return true;
+          }
+
+          // The guard above allows one link or the other; this narrows the type.
+          if (!transfer) return false;
+          const outcome = classifyTransfer(await transfer.sendTable(table, layer));
+
+          if (outcome.kind === 'busy') {
+            log('A transfer is already running.', 'warn');
+            notify.warn('A transfer is already running.');
             return false;
           }
 
-          dispatch({ type: 'replace', state: afterState });
+          if (outcome.kind === 'failed') {
+            log('The keyboard refused the transfer. Nothing was written.', 'err');
+            notify.err('The keyboard refused the transfer. Nothing was written.');
+            return false;
+          }
+
+          if (outcome.kind === 'confirmed') {
+            // The settings effect writes both layers once `applied` moves here.
+            dispatch({ type: 'replace', state: afterState });
+
+            log(`Upload accepted. The ${layer === 'fn' ? 'Fn layer' : 'top layer'} is live.`, 'ok');
+            notify.ok(`Upload accepted. The ${layer === 'fn' ? 'Fn layer' : 'top layer'} is live.`);
+            return true;
+          }
+
           log(
-            `Sent ${sent} key change${sent === 1 ? '' : 's'} over 2.4 GHz. The keyboard does not confirm them.`,
-            'ok',
+            `Upload rejected (${
+              outcome.status === null ? 'no reply' : `0x${hex([outcome.status])}`
+            }). Nothing was applied.`,
+            'err',
           );
-          notify.warn(
-            `${sent} key change${sent === 1 ? '' : 's'} sent over 2.4 GHz. The keyboard does not confirm it.`,
-          );
-          return true;
-        }
-
-        // The guard above allows one link or the other; this narrows the type.
-        if (!transfer) return false;
-        const result = await transfer.sendTable(table, layer);
-
-        if (result.busy) {
-          log('A transfer is already running.', 'warn');
-          notify.warn('A transfer is already running.');
+          notify.err('Upload rejected. Nothing was applied.');
+          return false;
+        } catch (error) {
+          log(`Upload failed: ${error instanceof Error ? error.message : String(error)}`, 'err');
+          notify.err('The upload failed. Nothing was written.');
           return false;
         }
+      });
 
-        if (isTransportFailed(result.steps)) {
-          log('The keyboard refused the transfer. Nothing was written.', 'err');
-          notify.err('The keyboard refused the transfer. Nothing was written.');
-          return false;
-        }
-
-        const commit = result.steps.find((step) => step.step === 'commit');
-        const status = commit?.reply.status ?? null;
-
-        if (status === STATUS.ok) {
-          // The settings effect writes both layers once `applied` moves here.
-          dispatch({ type: 'replace', state: afterState });
-
-          log(`Upload accepted. The ${layer === 'fn' ? 'Fn layer' : 'top layer'} is live.`, 'ok');
-          notify.ok(`Upload accepted. The ${layer === 'fn' ? 'Fn layer' : 'top layer'} is live.`);
-          return true;
-        }
-
-        log(
-          `Upload rejected (${status === null ? 'no reply' : `0x${hex([status])}`}). Nothing was applied.`,
-          'err',
-        );
-        notify.err('Upload rejected. Nothing was applied.');
-        return false;
-      } catch (error) {
-        log(`Upload failed: ${error instanceof Error ? error.message : String(error)}`, 'err');
-        notify.err('The upload failed. Nothing was written.');
-        return false;
-      } finally {
-        busyRef.current = false;
-        setBusy(false);
-      }
+      return sent ?? false;
     },
-    [dispatch, log, transfer, wireless],
+    [dispatch, log, runLocked, transfer, wireless],
   );
 
   const handleUsage = useCallback(
     (usage: number, media: boolean) => {
-      if (busyRef.current) return false;
+      if (isBusy()) return false;
       const check = validateUsage(state, usage, media);
       if (!check.ok) {
         log(check.message, 'warn');
@@ -281,44 +283,50 @@ export function App() {
       dispatch({ type: 'usage', usage, media });
       return true;
     },
-    [log, state],
+    [isBusy, log, state],
   );
 
   const handleReset = useCallback(() => {
-    if (busyRef.current) return;
+    if (isBusy()) return;
     dispatch({ type: 'reset-selected' });
-  }, []);
+  }, [isBusy]);
 
-  const handleLayer = useCallback((layer: Layer) => {
-    if (busyRef.current) return;
-    dispatch({ type: 'layer', layer });
-  }, []);
+  const handleLayer = useCallback(
+    (layer: Layer) => {
+      if (isBusy()) return;
+      dispatch({ type: 'layer', layer });
+    },
+    [isBusy],
+  );
 
-  const handleSelect = useCallback((idx: number) => {
-    if (busyRef.current) return;
-    dispatch({ type: 'select', idx });
-  }, []);
+  const handleSelect = useCallback(
+    (idx: number) => {
+      if (isBusy()) return;
+      dispatch({ type: 'select', idx });
+    },
+    [isBusy],
+  );
 
   const handleUpload = useCallback(() => {
-    if ((!transfer && !wireless) || busyRef.current || pendingCount === 0) return;
+    if ((!transfer && !wireless) || isBusy() || pendingCount === 0) return;
     const after = editorReducer(state, { type: 'uploaded' });
     void sendRows(getActiveRows(state), state.layer, after);
-  }, [pendingCount, sendRows, state, transfer, wireless]);
+  }, [isBusy, pendingCount, sendRows, state, transfer, wireless]);
 
   const handleRestore = useCallback(() => {
-    if ((!transfer && !wireless) || busyRef.current) return;
+    if ((!transfer && !wireless) || isBusy()) return;
     setConfirming(true);
-  }, [transfer, wireless]);
+  }, [isBusy, transfer, wireless]);
 
   const handleConfirmRestore = useCallback(() => {
-    if ((!transfer && !wireless) || busyRef.current) return;
+    if ((!transfer && !wireless) || isBusy()) return;
     setConfirming(false);
 
     const restored = editorReducer(state, { type: 'restore-layer' });
     dispatch({ type: 'replace', state: restored });
     const after = editorReducer(restored, { type: 'uploaded' });
     void sendRows(getActiveRows(restored), restored.layer, after);
-  }, [sendRows, state, transfer, wireless]);
+  }, [isBusy, sendRows, state, transfer, wireless]);
 
   const handleCancelRestore = useCallback(() => setConfirming(false), []);
 
@@ -329,77 +337,74 @@ export function App() {
         notify.warn('Connect the keyboard first.');
         return;
       }
-      if (busyRef.current) return;
 
-      busyRef.current = true;
-      setBusy(true);
-      setTimeStatus({ kind: 'idle' });
+      await runLocked(async () => {
+        setTimeStatus({ kind: 'idle' });
 
-      try {
-        if (wireless) {
-          await wireless.sendClock(buildTimePacket(at));
+        const sent = () => {
           setTimeStatus({ kind: 'ok', at });
           log(`Time sent. The screen clock is set to ${formatClock(at)}.`, 'ok');
           notify.ok(`Time sent. The screen clock is set to ${formatClock(at)}.`);
-          return;
-        }
+        };
 
-        if (!transfer) return;
-        const result = await transfer.sendTime(at);
+        try {
+          if (wireless) {
+            await wireless.sendClock(buildTimePacket(at));
+            sent();
+            return;
+          }
 
-        if (result.busy) {
-          log('A transfer is already running.', 'warn');
-          notify.warn('A transfer is already running.');
-          return;
-        }
+          if (!transfer) return;
+          const outcome = classifyTransfer(await transfer.sendTime(at));
 
-        if (isTransportFailed(result.steps)) {
+          if (outcome.kind === 'busy') {
+            log('A transfer is already running.', 'warn');
+            notify.warn('A transfer is already running.');
+            return;
+          }
+
+          if (outcome.kind === 'confirmed') {
+            sent();
+            return;
+          }
+
+          if (outcome.kind === 'failed') {
+            setTimeStatus({
+              kind: 'err',
+              message: 'The keyboard refused the time. Nothing changed.',
+            });
+            log('The keyboard refused the time. Nothing changed.', 'err');
+            notify.err('The keyboard refused the time. Nothing changed.');
+            return;
+          }
+
+          const silent = outcome.status === null;
           setTimeStatus({
             kind: 'err',
-            message: 'The keyboard refused the time. Nothing changed.',
-          });
-          log('The keyboard refused the time. Nothing changed.', 'err');
-          notify.err('The keyboard refused the time. Nothing changed.');
-          return;
-        }
-
-        const commit = result.steps.find((step) => step.step === 'commit');
-        const status = commit?.reply.status ?? null;
-
-        if (status === STATUS.ok) {
-          setTimeStatus({ kind: 'ok', at });
-          log(`Time sent. The screen clock is set to ${formatClock(at)}.`, 'ok');
-          notify.ok(`Time sent. The screen clock is set to ${formatClock(at)}.`);
-          return;
-        }
-
-        setTimeStatus({
-          kind: 'err',
-          message:
-            status === null
+            message: silent
               ? 'No reply from the keyboard. Nothing changed.'
               : 'The keyboard refused the time. Nothing changed.',
-        });
-        log(
-          `Time rejected (${status === null ? 'no reply' : `0x${hex([status])}`}). Nothing changed.`,
-          'err',
-        );
-        notify.err(
-          status === null
-            ? 'No reply from the keyboard. Nothing changed.'
-            : 'The keyboard refused the time. Nothing changed.',
-        );
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        setTimeStatus({ kind: 'err', message: 'The time could not be sent. Nothing changed.' });
-        log(`Time failed: ${message}`, 'err');
-        notify.err('The time could not be sent. Nothing changed.');
-      } finally {
-        busyRef.current = false;
-        setBusy(false);
-      }
+          });
+          log(
+            `Time rejected (${
+              outcome.status === null ? 'no reply' : `0x${hex([outcome.status])}`
+            }). Nothing changed.`,
+            'err',
+          );
+          notify.err(
+            silent
+              ? 'No reply from the keyboard. Nothing changed.'
+              : 'The keyboard refused the time. Nothing changed.',
+          );
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          setTimeStatus({ kind: 'err', message: 'The time could not be sent. Nothing changed.' });
+          log(`Time failed: ${message}`, 'err');
+          notify.err('The time could not be sent. Nothing changed.');
+        }
+      });
     },
-    [log, transfer, wireless],
+    [log, runLocked, transfer, wireless],
   );
 
   const handleSendAnimation = useCallback(
@@ -409,86 +414,85 @@ export function App() {
         notify.warn('Connect the keyboard first.');
         return;
       }
-      if (busyRef.current) return;
 
-      busyRef.current = true;
-      setBusy(true);
-      setAnimationStatus({ kind: 'idle' });
-      setAnimationProgress(null);
-      setAnimationSending(true);
+      await runLocked(async () => {
+        setAnimationStatus({ kind: 'idle' });
+        setAnimationProgress(null);
+        setAnimationSending(true);
 
-      let sentBlocks = 0;
+        let sentBlocks = 0;
 
-      try {
-        const payload = buildAnimationPayload({ frames, delaysMs: delays });
-        const result = await transfer.sendAnimation(payload, {
-          onProgress: (sent, total) => {
-            sentBlocks = sent;
-            setAnimationProgress({ sent, total });
-          },
-        });
+        try {
+          const payload = buildAnimationPayload({ frames, delaysMs: delays });
+          const outcome = classifyTransfer(
+            await transfer.sendAnimation(payload, {
+              onProgress: (sent, total) => {
+                sentBlocks = sent;
+                setAnimationProgress({ sent, total });
+              },
+            }),
+          );
 
-        if (result.busy) {
-          log('A transfer is already running.', 'warn');
-          notify.warn('A transfer is already running.');
-          return;
-        }
+          if (outcome.kind === 'busy') {
+            log('A transfer is already running.', 'warn');
+            notify.warn('A transfer is already running.');
+            return;
+          }
 
-        if (isTransportFailed(result.steps)) {
-          const done = Math.max(0, Math.floor((sentBlocks - 1) / 8));
+          if (outcome.kind === 'failed') {
+            const done = Math.max(0, Math.floor((sentBlocks - 1) / 8));
+            setAnimationStatus({
+              kind: 'err',
+              message: `The upload stopped after ${done} of ${frames.length} frames. Unplug and replug the keyboard if it stops responding, then send the animation again.`,
+            });
+            log('The screen upload stopped early. The commit was not sent.', 'err');
+            notify.err(`The upload stopped after ${done} of ${frames.length} frames.`);
+            return;
+          }
+
+          if (outcome.kind === 'confirmed') {
+            setAnimationStatus({
+              kind: 'ok',
+              message: 'Sent. The screen is playing the animation.',
+            });
+            log(
+              `Screen animation sent (${frames.length} ${frames.length === 1 ? 'frame' : 'frames'}).`,
+              'ok',
+            );
+            notify.ok(
+              `Animation sent, ${frames.length} ${frames.length === 1 ? 'frame' : 'frames'}.`,
+            );
+            return;
+          }
+
           setAnimationStatus({
             kind: 'err',
-            message: `The upload stopped after ${done} of ${frames.length} frames. Unplug and replug the keyboard if it stops responding, then send the animation again.`,
+            message:
+              'The keyboard refused the commit. The screen may show a mix of the old and new animation; send another one to replace it.',
           });
-          log('The screen upload stopped early. The commit was not sent.', 'err');
-          notify.err(`The upload stopped after ${done} of ${frames.length} frames.`);
-          return;
-        }
-
-        const commit = result.steps.find((step) => step.step === 'commit');
-        const status = commit?.reply.status ?? null;
-
-        if (status === STATUS.ok) {
-          setAnimationStatus({ kind: 'ok', message: 'Sent. The screen is playing the animation.' });
           log(
-            `Screen animation sent (${frames.length} ${frames.length === 1 ? 'frame' : 'frames'}).`,
-            'ok',
+            `Screen animation rejected (${
+              outcome.status === null ? 'no reply' : `0x${hex([outcome.status])}`
+            }). The screen may hold a mix of old and new frames.`,
+            'err',
           );
-          notify.ok(
-            `Animation sent, ${frames.length} ${frames.length === 1 ? 'frame' : 'frames'}.`,
-          );
-          return;
+          notify.err('The keyboard refused the animation. The screen may hold a mix of frames.');
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          setAnimationStatus({
+            kind: 'err',
+            message:
+              'The upload stopped unexpectedly. If the keyboard stops responding, unplug and replug it, then send the animation again.',
+          });
+          log(`Screen upload failed: ${message}`, 'err');
+          notify.err('The animation could not be sent.');
+        } finally {
+          setAnimationSending(false);
+          setAnimationProgress(null);
         }
-
-        setAnimationStatus({
-          kind: 'err',
-          message:
-            'The keyboard refused the commit. The screen may show a mix of the old and new animation; send another one to replace it.',
-        });
-        log(
-          `Screen animation rejected (${
-            status === null ? 'no reply' : `0x${hex([status])}`
-          }). The screen may hold a mix of old and new frames.`,
-          'err',
-        );
-        notify.err('The keyboard refused the animation. The screen may hold a mix of frames.');
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        setAnimationStatus({
-          kind: 'err',
-          message:
-            'The upload stopped unexpectedly. If the keyboard stops responding, unplug and replug it, then send the animation again.',
-        });
-        log(`Screen upload failed: ${message}`, 'err');
-        notify.err('The animation could not be sent.');
-      } finally {
-        setAnimationSending(false);
-        setAnimationProgress(null);
-        busyRef.current = false;
-        setBusy(false);
-      }
+      });
     },
-    [log, transfer],
+    [log, runLocked, transfer],
   );
 
   const handleApplyLight = useCallback(
@@ -499,87 +503,83 @@ export function App() {
         notify.warn('Connect the keyboard first.');
         return;
       }
-      if (busyRef.current) return;
 
-      busyRef.current = true;
-      setBusy(true);
-      setLightingStatus({ kind: 'idle' });
+      await runLocked(async () => {
+        setLightingStatus({ kind: 'idle' });
 
-      try {
-        const record = buildLightRecord({
-          mode,
-          r: Number.parseInt(color.slice(1, 3), 16),
-          g: Number.parseInt(color.slice(3, 5), 16),
-          b: Number.parseInt(color.slice(5, 7), 16),
-          brightness,
-          speed,
-          colorful,
-          direction,
-        });
-
-        if (wireless) {
-          await wireless.sendLight(record);
+        const accepted = () => {
           const { message, log: line } = describeLight(values);
           setLightingStatus({ kind: 'ok', message });
           log(line, 'ok');
           notify.ok(message);
-          return;
-        }
+        };
 
-        if (!transfer) return;
-        const result = await transfer.sendLighting(record);
+        try {
+          const record = buildLightRecord({
+            mode,
+            r: Number.parseInt(color.slice(1, 3), 16),
+            g: Number.parseInt(color.slice(3, 5), 16),
+            b: Number.parseInt(color.slice(5, 7), 16),
+            brightness,
+            speed,
+            colorful,
+            direction,
+          });
 
-        if (result.busy) {
-          log('A transfer is already running.', 'warn');
-          notify.warn('A transfer is already running.');
-          return;
-        }
+          if (wireless) {
+            await wireless.sendLight(record);
+            accepted();
+            return;
+          }
 
-        if (isTransportFailed(result.steps)) {
+          if (!transfer) return;
+          const outcome = classifyTransfer(await transfer.sendLighting(record));
+
+          if (outcome.kind === 'busy') {
+            log('A transfer is already running.', 'warn');
+            notify.warn('A transfer is already running.');
+            return;
+          }
+
+          if (outcome.kind === 'confirmed') {
+            accepted();
+            return;
+          }
+
+          if (outcome.kind === 'failed') {
+            setLightingStatus({
+              kind: 'err',
+              message: 'The light may not have been sent. Check the keyboard before trying again.',
+            });
+            log('The light transfer stopped early. Check the keyboard.', 'err');
+            notify.err('The light may not have been sent. Check the keyboard.');
+            return;
+          }
+
           setLightingStatus({
             kind: 'err',
-            message: 'The light may not have been sent. Check the keyboard before trying again.',
+            message:
+              'The keyboard did not confirm the light. It may have applied anyway; check the keys and apply again if not.',
           });
-          log('The light transfer stopped early. Check the keyboard.', 'err');
-          notify.err('The light may not have been sent. Check the keyboard.');
-          return;
+          log(
+            `Light not confirmed (${
+              outcome.status === null ? 'no reply' : `0x${hex([outcome.status])}`
+            }). It may still have applied.`,
+            'err',
+          );
+          notify.warn('The keyboard did not confirm the light. Check it before trying again.');
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          setLightingStatus({
+            kind: 'err',
+            message: 'The light could not be sent. Nothing changed.',
+          });
+          log(`Light failed: ${message}`, 'err');
+          notify.err('The light could not be sent.');
         }
-
-        const commit = result.steps.find((step) => step.step === 'commit');
-        const status = commit?.reply.status ?? null;
-
-        if (status === STATUS.ok) {
-          const { message, log: line } = describeLight(values);
-          setLightingStatus({ kind: 'ok', message });
-          log(line, 'ok');
-          notify.ok(message);
-          return;
-        }
-
-        setLightingStatus({
-          kind: 'err',
-          message:
-            'The keyboard did not confirm the light. It may have applied anyway; check the keys and apply again if not.',
-        });
-        log(
-          `Light not confirmed (${status === null ? 'no reply' : `0x${hex([status])}`}). It may still have applied.`,
-          'err',
-        );
-        notify.warn('The keyboard did not confirm the light. Check it before trying again.');
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        setLightingStatus({
-          kind: 'err',
-          message: 'The light could not be sent. Nothing changed.',
-        });
-        log(`Light failed: ${message}`, 'err');
-        notify.err('The light could not be sent.');
-      } finally {
-        busyRef.current = false;
-        setBusy(false);
-      }
+      });
     },
-    [log, transfer, wireless],
+    [log, runLocked, transfer, wireless],
   );
 
   const handleApplyPerKey = useCallback(
@@ -589,113 +589,111 @@ export function App() {
         notify.warn('Connect the keyboard first.');
         return;
       }
-      if (busyRef.current) return;
 
-      busyRef.current = true;
-      setBusy(true);
-      setPerKeyStatus({ kind: 'idle' });
+      await runLocked(async () => {
+        setPerKeyStatus({ kind: 'idle' });
 
-      try {
-        const colours = new Map<number, string>();
-        for (const [id, colour] of Object.entries(values.colors)) {
-          colours.set(Number(id), colour);
-        }
+        try {
+          const colours = new Map<number, string>();
+          for (const [id, colour] of Object.entries(values.colors)) {
+            colours.set(Number(id), colour);
+          }
 
-        const trigger = buildPerKeyTrigger(values.brightness);
-        const table = buildPerKeyTable(colours);
-        const markSent = () =>
-          updateSettings({
-            perKey: { ...values, sent: values.colors, sentBrightness: values.brightness },
-          });
+          const trigger = buildPerKeyTrigger(values.brightness);
+          const table = buildPerKeyTable(colours);
+          const markSent = () =>
+            updateSettings({
+              perKey: { ...values, sent: values.colors, sentBrightness: values.brightness },
+            });
 
-        if (wireless) {
-          // The receiver applies the frames as they arrive and sends nothing
-          // back, so `sent` moves on the write, not on a reply.
-          const frames = await wireless.sendPerKey(trigger, table);
-          markSent();
+          if (wireless) {
+            // The receiver applies the frames as they arrive and sends nothing
+            // back, so `sent` moves on the write, not on a reply.
+            const frames = await wireless.sendPerKey(trigger, table);
+            markSent();
 
-          const { message, log: line } = describePerKey(colours.size, values.brightness);
+            const { message, log: line } = describePerKey(colours.size, values.brightness);
+            setPerKeyStatus({
+              kind: 'ok',
+              message: `${message} The receiver does not confirm the map.`,
+            });
+            log(`${line} Sent in ${frames} frames; the receiver does not confirm it.`, 'ok');
+            notify.warn(
+              `${colours.size} key change${colours.size === 1 ? '' : 's'} sent over 2.4 GHz. The keyboard does not confirm them.`,
+            );
+            return;
+          }
+
+          // The guard above allows one link or the other; this narrows the type.
+          if (!transfer) return;
+          const result = await transfer.sendPerKey(trigger, table);
+
+          if (result.busy) {
+            log('A transfer is already running.', 'warn');
+            notify.warn('A transfer is already running.');
+            return;
+          }
+
+          // No table means the mode switch was refused, so nothing was painted.
+          if (!result.table) {
+            setPerKeyStatus({
+              kind: 'err',
+              message: 'The keyboard refused per-key mode. Nothing was painted.',
+            });
+            log('The keyboard refused the per-key mode. Nothing was painted.', 'err');
+            notify.err('The keyboard refused per-key mode. Nothing was painted.');
+            return;
+          }
+
+          const outcome = classifySteps(result.table);
+
+          if (outcome.kind === 'confirmed') {
+            // Only a confirmed commit moves what the panel believes is on the board.
+            markSent();
+            const { message, log: line } = describePerKey(colours.size, values.brightness);
+            setPerKeyStatus({ kind: 'ok', message });
+            log(line, 'ok');
+            notify.ok(message);
+            return;
+          }
+
+          if (outcome.kind === 'failed') {
+            setPerKeyStatus({
+              kind: 'err',
+              message: 'The colours may not have been sent. Check the board before trying again.',
+            });
+            log('The per-key transfer stopped early. The board may hold a mix of colours.', 'err');
+            notify.err('The colours may not have been sent.');
+            return;
+          }
+
+          if (outcome.kind !== 'rejected') return;
           setPerKeyStatus({
-            kind: 'ok',
-            message: `${message} The receiver does not confirm the map.`,
+            kind: 'err',
+            message:
+              'The keyboard did not confirm the colours. The board may still show the previous map; apply again to replace it.',
           });
-          log(`${line} Sent in ${frames} frames; the receiver does not confirm it.`, 'ok');
-          notify.warn(
-            `${colours.size} key change${colours.size === 1 ? '' : 's'} sent over 2.4 GHz. The keyboard does not confirm them.`,
+          log(
+            `Per-key colours not confirmed (${
+              outcome.status === null ? 'no reply' : `0x${hex([outcome.status])}`
+            }).`,
+            'err',
           );
-          return;
-        }
-
-        // The guard above allows one link or the other; this narrows the type.
-        if (!transfer) return;
-        const result = await transfer.sendPerKey(trigger, table);
-
-        if (result.busy) {
-          log('A transfer is already running.', 'warn');
-          notify.warn('A transfer is already running.');
-          return;
-        }
-
-        // No table means the mode switch was refused, so nothing was painted.
-        if (!result.table) {
+          notify.warn(
+            'The keyboard did not confirm the colours. Apply again if the board looks wrong.',
+          );
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
           setPerKeyStatus({
             kind: 'err',
-            message: 'The keyboard refused per-key mode. Nothing was painted.',
+            message: 'The colours could not be sent. If the board looks wrong, apply again.',
           });
-          log('The keyboard refused the per-key mode. Nothing was painted.', 'err');
-          notify.err('The keyboard refused per-key mode. Nothing was painted.');
-          return;
+          log(`Per-key colours failed: ${message}`, 'err');
+          notify.err('The colours could not be sent.');
         }
-
-        if (isTransportFailed(result.table)) {
-          setPerKeyStatus({
-            kind: 'err',
-            message: 'The colours may not have been sent. Check the board before trying again.',
-          });
-          log('The per-key transfer stopped early. The board may hold a mix of colours.', 'err');
-          notify.err('The colours may not have been sent.');
-          return;
-        }
-
-        const status =
-          result.table.filter((step) => step.step === 'commit').at(-1)?.reply.status ?? null;
-
-        if (status === STATUS.ok) {
-          // Only a confirmed commit moves what the panel believes is on the board.
-          markSent();
-          const { message, log: line } = describePerKey(colours.size, values.brightness);
-          setPerKeyStatus({ kind: 'ok', message });
-          log(line, 'ok');
-          notify.ok(message);
-          return;
-        }
-
-        setPerKeyStatus({
-          kind: 'err',
-          message:
-            'The keyboard did not confirm the colours. The board may still show the previous map; apply again to replace it.',
-        });
-        log(
-          `Per-key colours not confirmed (${status === null ? 'no reply' : `0x${hex([status])}`}).`,
-          'err',
-        );
-        notify.warn(
-          'The keyboard did not confirm the colours. Apply again if the board looks wrong.',
-        );
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        setPerKeyStatus({
-          kind: 'err',
-          message: 'The colours could not be sent. If the board looks wrong, apply again.',
-        });
-        log(`Per-key colours failed: ${message}`, 'err');
-        notify.err('The colours could not be sent.');
-      } finally {
-        busyRef.current = false;
-        setBusy(false);
-      }
+      });
     },
-    [log, transfer, wireless],
+    [log, runLocked, transfer, wireless],
   );
 
   const handleApplySettings = useCallback(
@@ -705,88 +703,83 @@ export function App() {
         notify.warn('Connect the keyboard first.');
         return;
       }
-      if (busyRef.current) return;
 
-      busyRef.current = true;
-      setBusy(true);
-      setDeviceStatus({ kind: 'idle' });
+      await runLocked(async () => {
+        setDeviceStatus({ kind: 'idle' });
 
-      try {
-        const record = buildSettingsRecord(values);
-
-        if (wireless) {
-          await wireless.sendSettings(record);
+        const accepted = () => {
           const { message, log: line } = describeSettings(values);
           setDeviceStatus({ kind: 'ok', message });
           log(line, 'ok');
           notify.ok(message);
           updateSettings({ deviceLastSent: { values, at: Date.now() } });
-          return;
-        }
+        };
 
-        if (!transfer) return;
-        const result = await transfer.sendSettings(record);
+        try {
+          const record = buildSettingsRecord(values);
 
-        if (result.busy) {
-          log('A transfer is already running.', 'warn');
-          notify.warn('A transfer is already running.');
-          return;
-        }
+          if (wireless) {
+            await wireless.sendSettings(record);
+            accepted();
+            return;
+          }
 
-        if (isTransportFailed(result.steps)) {
+          if (!transfer) return;
+          const outcome = classifyTransfer(await transfer.sendSettings(record));
+
+          if (outcome.kind === 'busy') {
+            log('A transfer is already running.', 'warn');
+            notify.warn('A transfer is already running.');
+            return;
+          }
+
+          if (outcome.kind === 'confirmed') {
+            accepted();
+            return;
+          }
+
+          if (outcome.kind === 'failed') {
+            setDeviceStatus({
+              kind: 'err',
+              message:
+                'The settings may not have been sent. Check the shortcuts before trying again.',
+            });
+            log('The settings transfer stopped early. Check the keyboard.', 'err');
+            notify.err('The settings may not have been sent. Check the shortcuts.');
+            return;
+          }
+
           setDeviceStatus({
             kind: 'err',
             message:
-              'The settings may not have been sent. Check the shortcuts before trying again.',
+              'The keyboard did not confirm the settings. They may have applied anyway; check the shortcuts and apply again if not.',
           });
-          log('The settings transfer stopped early. Check the keyboard.', 'err');
-          notify.err('The settings may not have been sent. Check the shortcuts.');
-          return;
+          log(
+            `Device settings not confirmed (${
+              outcome.status === null ? 'no reply' : `0x${hex([outcome.status])}`
+            }). They may still have applied.`,
+            'err',
+          );
+          notify.warn('The keyboard did not confirm the settings. Check the shortcuts.');
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          setDeviceStatus({
+            kind: 'err',
+            message: 'The settings could not be sent. Nothing changed.',
+          });
+          log(`Settings failed: ${message}`, 'err');
+          notify.err('The settings could not be sent.');
         }
-
-        const commit = result.steps.find((step) => step.step === 'commit');
-        const status = commit?.reply.status ?? null;
-
-        if (status === STATUS.ok) {
-          const { message, log: line } = describeSettings(values);
-          setDeviceStatus({ kind: 'ok', message });
-          log(line, 'ok');
-          notify.ok(message);
-          updateSettings({ deviceLastSent: { values, at: Date.now() } });
-          return;
-        }
-
-        setDeviceStatus({
-          kind: 'err',
-          message:
-            'The keyboard did not confirm the settings. They may have applied anyway; check the shortcuts and apply again if not.',
-        });
-        log(
-          `Device settings not confirmed (${status === null ? 'no reply' : `0x${hex([status])}`}). They may still have applied.`,
-          'err',
-        );
-        notify.warn('The keyboard did not confirm the settings. Check the shortcuts.');
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        setDeviceStatus({
-          kind: 'err',
-          message: 'The settings could not be sent. Nothing changed.',
-        });
-        log(`Settings failed: ${message}`, 'err');
-        notify.err('The settings could not be sent.');
-      } finally {
-        busyRef.current = false;
-        setBusy(false);
-      }
+      });
     },
-    [log, transfer, wireless],
+    [log, runLocked, transfer, wireless],
   );
 
   const handleOpenAdvanced = useCallback(() => {
-    if (!connected || busyRef.current) return;
+    if (!connected || isBusy()) return;
     setAdvancedMounted(true);
     setAdvancedOpen(true);
-  }, [connected]);
+  }, [connected, isBusy]);
 
   const handleCloseAdvanced = useCallback(() => setAdvancedOpen(false), []);
 
@@ -795,10 +788,12 @@ export function App() {
     setLogOpen(true);
   }, []);
 
-  const handleAdvancedBusy = useCallback((value: boolean) => {
-    busyRef.current = value;
-    setBusy(value);
-  }, []);
+  const handleAdvancedBusy = useCallback(
+    (value: boolean) => {
+      setLockBusy(value);
+    },
+    [setLockBusy],
+  );
 
   const runConnect = useCallback(
     async (options?: ConnectOptions) => {
@@ -841,7 +836,7 @@ export function App() {
 
   const handleImportProfile = useCallback(
     (profile: ParsedProfile) => {
-      if (busyRef.current) {
+      if (isBusy()) {
         notify.warn('Finish the current transfer first.');
         return;
       }
@@ -867,7 +862,7 @@ export function App() {
       if (painted) parts.push(`${painted} painted key${painted === 1 ? '' : 's'}`);
       notify.ok(`Profile loaded: ${parts.join(' and ') || 'no changes'}. Nothing sent.`);
     },
-    [state.layer],
+    [isBusy, state.layer],
   );
 
   // A connected link is not a problem, so only the failures take the error

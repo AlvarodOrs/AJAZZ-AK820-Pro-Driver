@@ -15,8 +15,8 @@ src/components/ui/       Button, Input, Popover, Calendar, Tabs, Checkbox, Slide
                          Command, Combobox, ToggleGroup, Sheet, Sonner
 src/components/          StatusNote, TabRow, UsbOnlyBadge, UpdateNotice, PageFooter
 src/lib/keymap/          constants, factory keys, record encoding, names, parsing, table
-src/lib/hid/             protocol, client, collections, wireless, WebHID types, transfer, time,
-                         probes, raw
+src/lib/hid/             protocol, client, collections, wireless, WebHID types, transfer, outcome,
+                         time, probes, raw
 src/lib/screen/          RGB565, frame rendering, frame layout, animation payload
 src/lib/lighting/        the 64-byte record, the per-key table, preview motion, wording
 src/lib/device/          the 64-byte settings record, response levels, sleep options
@@ -40,6 +40,7 @@ src/features/screen/     ScreenPanel, ScreenPreview, ClockCard, DateTimePicker, 
                          AnimationStage, useAnimationFile
 src/features/lighting/   LightingPanel, LightPreview, PerKeyPanel, PerKeyBoard
 src/features/log/        useLog, LogDrawer
+src/features/send/       the page's one-at-a-time lock, shared by every send
 src/features/settings/   the settings store and its React hook
 src/features/advanced/   AdvancedDrawer
 src/test/                Vitest setup, fake HID device and fake clock
@@ -123,6 +124,13 @@ connection banner uses the neutral tone rather than the error one.
 `waitReply` settles for 220 ms, then polls every 60 ms for up to 6 s. It accepts only a frame
 where byte 1 matches the command and byte 3 is not zero. A commit `0xFF` is a firmware rejection,
 not a transport failure; `isTransportFailed` keeps the two apart.
+
+`classifyTransfer` in `src/lib/hid/outcome.ts` turns a finished sequence into one of four outcomes:
+`confirmed` (the commit answered `0x01`), `rejected` (the firmware answered `0xFF`, or answered
+nothing), `failed` (the transfer died before the commit), and `busy`. Only `confirmed` lets the page
+move `applied`, so that decision lives in one function instead of in each panel's handler. The
+receiver never produces a confirmed outcome: it has no reply channel, so its writes move `applied`
+when they are sent and the page says so in different words.
 
 `TransferService.sendTime` uses the same staged shape for the screen clock:
 
@@ -342,6 +350,7 @@ app busy flag through `onBusyChange`.
 | `src/lib/hid/protocol.test.ts` | product ids, commands, frame padding |
 | `src/lib/hid/client.test.ts` | feature send/read, timeout and errors |
 | `src/lib/hid/transfer.test.ts` | the full sequence, abort paths, busy lock, byte order, clock |
+| `src/lib/hid/outcome.test.ts` | confirmed, rejected, failed and busy, and which step wins |
 | `src/lib/hid/time.test.ts` | clock body, year offset, weekday, input parser |
 | `src/lib/screen/animation.test.ts` | RGB565, header, delays, frame placement |
 | `src/lib/screen/render.test.ts` | RGB565 to RGBA, the whole panel, round trip |
@@ -380,6 +389,7 @@ app busy flag through `onBusyChange`.
 | `scripts/check-precache.mjs` | not a test: the build check that every shipped file is precached |
 | `src/App.test.tsx` | offline editing, layers, log |
 | `src/App.upload.test.tsx` | fake HID end to end: connect, edit, upload, commit |
+| `src/App.send.test.tsx` | a rejected commit and a refused begin keep the change pending; the lock releases |
 | `src/App.screen.test.tsx` | view switch and a fake-HID clock send |
 | `src/App.wireless.test.tsx` | fake receiver: key patch, settings frame, USB-only screen card |
 

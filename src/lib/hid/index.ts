@@ -21,6 +21,8 @@ export {
   padFrame,
 } from './protocol';
 export { TransferService, isTransportFailed } from './transfer';
+export { classifySteps, classifyTransfer } from './outcome';
+export type { SendOutcome } from './outcome';
 export type {
   HidLayer,
   LogFn,
