@@ -31,8 +31,9 @@ the key table, so keep the vendor application available for recovery.
 
 The page can be installed as an app: its own window, a Start menu or Applications entry, and it
 opens with no network once it has loaded. Use the install control in the address bar or the browser
-menu. Chrome, Edge and Opera offer it on desktop; mobile browsers do not, and would not help, since
-WebHID is desktop only.
+menu. Chrome and Edge offer it on desktop. Opera runs the page and reaches the keyboard but does not
+offer the install control here, and mobile browsers could not use it anyway, since WebHID is desktop
+only.
 
 A cached copy does not go stale silently. When a newer build is ready, the strip under the header
 names the build you are running and offers **Reload**, and nothing changes under the open page until
@@ -45,7 +46,7 @@ The app is a Vite, React and TypeScript rewrite of the v1 single-file app, and t
 sends are unchanged. Each feature that writes to the board has been run on an AK820 Pro: the key
 table and both layers, the restore actions, the screen clock and animation channel, the light with
 its 20 effects and per-key colours on both links, the five device settings, and the 2.4 GHz receiver
-with its records, key patches and power-cycle behaviour. Tests 9 to 27 cover the v2 build, and
+with its records, key patches and power-cycle behaviour. Tests 9 to 30 cover the v2 build, and
 [docs/02-hardware-tests.md](docs/02-hardware-tests.md) records each run, its date and what the board
 did.
 
@@ -69,8 +70,14 @@ been switched off. The key map, the light, the per-key colours and the clock sur
 Top-layer and Fn-layer remapping and both restore actions were tested on an AK820 Pro (VID `0C45`,
 PID `8009`) with the v1 app. The v2 build repeated the top-layer write and restore, wrote and
 cleared an Fn media override with persistence across a reload, ran both restore actions and held
-the upload lock, on 29 Oct 2026. Media testing covered Mute, Volume up and Volume down. The other
-consumer functions use the same record format but were not each tested.
+the upload lock, on 29 Oct 2026.
+
+On 15 Nov 2026 every function in the Media group was assigned, uploaded and confirmed by the action
+Windows or the focused application performed: Play/Pause, Stop, Previous and Next track, Volume up,
+down and relative, Mute, Eject, Fast forward, Rewind, Brightness up and down, Browser back, forward
+and home, Calculator and Email. Brightness brings up the Windows slider. These runs are tests 28 to
+30 in [docs/02-hardware-tests.md](docs/02-hardware-tests.md), together with the browser and offline
+checks of the same day.
 
 ## Supported devices
 

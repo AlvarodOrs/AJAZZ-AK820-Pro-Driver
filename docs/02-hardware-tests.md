@@ -1,8 +1,8 @@
 # 02 · Hardware tests (what was actually run)
 
 Board: **AJAZZ AK820 Pro**, VID/PID `0C45:8009`, US layout, 81 keys, firmware as shipped in
-`..._RGB_V1.0.0.5`. Host: Windows, Chrome (WebHID). Every write below was accepted with
-`commit 0x01`, and the *keyboard behaviour* was checked by the person at the keyboard — the
+`..._RGB_V1.0.0.5`. Host: Windows, Chrome, Edge and Opera (WebHID). Every write below was accepted
+with `commit 0x01`, and the *keyboard behaviour* was checked by the person at the keyboard — the
 mailbox alone is not evidence (see docs/01-protocol.md §3).
 
 Tests 1 to 8 ran on the v1 single-file app. The v2 rewrite sends the same bytes in the same order;
@@ -800,6 +800,77 @@ on-demand beat before the record that follows it.
 With that, the user left the page idle for thirty seconds or more and applied new keys; every first
 apply landed, with the heartbeats visible in the log every ten seconds. The effect → Per-key
 sequence also worked without a second try.
+
+---
+
+## Test 28 — the rest of the Media group (15 Nov 2026)
+
+Build: `main` at version 2.15.0, Chrome on Windows, the keyboard on USB.
+
+Seven of these are the functions the vendor firmware names; the rest are consumer usages the
+firmware passes through. Each was assigned from the inspector's Media group, uploaded, pressed, and
+then cleared with the zero record. The journal below is what the focused application or Windows did,
+not what the mailbox said.
+
+| Function | Usage | Record |
+|---|---|---|
+| Play/Pause | `0xCD` | `03 CD 00 00` |
+| Stop | `0xB7` | `03 B7 00 00` |
+| Previous track | `0xB6` | `03 B6 00 00` |
+| Next track | `0xB5` | `03 B5 00 00` |
+| Volume up | `0xE9` | `03 E9 00 00` |
+| Volume down | `0xEA` | `03 EA 00 00` |
+| Mute | `0xE2` | `03 E2 00 00` |
+| Eject | `0xB8` | `03 B8 00 00` |
+| Fast forward | `0xB3` | `03 B3 00 00` |
+| Rewind | `0xB4` | `03 B4 00 00` |
+| Volume (relative) | `0xE8` | `03 E8 00 00` |
+| Brightness up | `0x6F` | `03 6F 00 00` |
+| Brightness down | `0x70` | `03 70 00 00` |
+| Browser back | `0x0224` | `03 24 02 00` |
+| Browser forward | `0x0225` | `03 25 02 00` |
+| Browser home | `0x0223` | `03 23 02 00` |
+| Calculator | `0x0192` | `03 92 01 00` |
+| Email | `0x018A` | `03 8A 01 00` |
+
+Every row fired. Brightness brings up the Windows slider, which is the clearest evidence of the
+two-byte consumer usages reaching the right page: `0x6F` is not a keyboard usage at all.
+
+This closes the README caveat that said the other consumer functions share the record but were not
+each tried. It changes no byte: the record type was already `0x03` and the page was already carried
+explicitly, so what Test 8 left open was coverage rather than a question.
+
+---
+
+## Test 29 — Edge and Opera (15 Nov 2026)
+
+Build: `main` at version 2.15.0, the keyboard on USB, Windows.
+
+The page was opened in Microsoft Edge and in Opera. In both, the chooser listed the keyboard, it
+connected over USB, and an upload completed with the board showing the change. Browser versions were
+not recorded.
+
+That matches the README's requirement, which asks for Chrome, Edge or Opera on desktop; until this
+run only Chrome had been used, and the requirement was a claim rather than a record.
+
+---
+
+## Test 30 — install, offline and the update strip (15 Nov 2026)
+
+Build: `main` at version 2.15.0, the deployed origin, Windows.
+
+- Installed as an app from the address-bar control in Chrome, and again in Edge. Both opened in
+  their own window afterwards.
+- With the network disconnected, the installed app opened and worked, so the precache covers the
+  panels and not only the shell.
+- With a newer build published, the strip under the header appeared, named the running build and
+  offered **Reload**. The page did not change until the button was pressed.
+- Opera offers no install control for this page. It runs the page and reaches the keyboard
+  (Test 29), it just cannot be installed.
+
+The strip matters more here than in most apps: a cached copy would otherwise keep sending the
+previous build's bytes to a keyboard, so the worker's refusal to take over on its own is now a
+checked behaviour rather than an intention.
 
 **Found.** The receiver ignores records after a quiet spell, and a heartbeat 10 ms before a record
 does not bring it back. Steady beats, not a beat at send time, keep the link usable.

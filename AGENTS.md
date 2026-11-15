@@ -227,7 +227,7 @@ site runs at https://ak820-webhid.netlify.app/. The keymap, HID transport and tr
 editor, screen, lighting, device settings and the advanced drawer are in place, and `npm run verify`
 gates all of them.
 
-Hardware evidence lives in `docs/02-hardware-tests.md`. Tests 9 to 27 cover the React rewrite, the
+Hardware evidence lives in `docs/02-hardware-tests.md`. Tests 9 to 30 cover the React rewrite, the
 screen clock and animation channel, the light with its 20 effects, per-key colours on both links,
 the device settings, and the 2.4 GHz receiver with its records, key patches, quiet window and
 power-cycle behaviour. A release that changes a byte needs its own dated test; one that changes only

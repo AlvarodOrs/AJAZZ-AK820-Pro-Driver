@@ -131,10 +131,16 @@ A newer build is downloaded and then waits in the worker. The strip under the he
 build is running and offers **Reload**; nothing changes under an open page until that button is
 pressed. The footer carries the same version.
 
-Only Chromium desktop browsers install it, which is also the only place WebHID exists: Firefox,
-Safari and every mobile browser can show the page but cannot use it. `npm run dev` does not
-register the worker, because a worker in front of Vite's hot reload is more trouble than it is
-worth. Use `npm run preview` to exercise install and offline locally.
+Chrome and Edge can install it. Those two, plus Opera, are the browsers that speak WebHID: Firefox,
+Safari and every mobile browser can show the page but cannot use it. Opera is the exception on this
+page, since it reaches the keyboard but offers no install control, so it stays a browser tab.
+`npm run dev` does not register the worker, because a worker in front of Vite's hot reload is more
+trouble than it is worth. Use `npm run preview` to exercise install and offline locally.
+
+Verified on 15 Nov 2026 on the deployed origin, with `main` at 2.15.0: installed from the
+address-bar control in Chrome and in Edge, opened with the network disconnected in both, and the
+**Reload** strip appeared once a newer build was published and left the page alone until pressed.
+`docs/02-hardware-tests.md` Test 30 records the run.
 
 The icons are committed as PNGs. `public/icons/icon-192.png` and `icon-512.png` come from
 `public/favicon.svg`; the maskable pair and the 180 px Apple icon come from

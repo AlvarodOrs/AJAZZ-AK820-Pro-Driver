@@ -176,6 +176,17 @@ behaviour at the keyboard:
 
 The `0x03` record is correct on the Fn layer; the `0x07 …` fallback was not needed.
 
+### Result (15 Nov 2026)
+
+The whole group followed, on USB with `main` at 2.15.0: Play/Pause, Stop, Previous and Next track,
+Volume up, down and relative, Mute, Eject, Fast forward, Rewind, Brightness up and down, Browser
+back, forward and home, Calculator and Email. Every usage fired, and brightness raises the Windows
+slider. The records are listed in `docs/02-hardware-tests.md` Test 28.
+
+What that adds is coverage, not a format: the two-byte usages (`c:0x0224`, `c:0x0192`) go out as
+`03 <lo> <hi> 00` from the same record type, which is why the page marker has to be explicit rather
+than guessed from the number.
+
 ---
 
 ## 4. Do not forget
