@@ -176,6 +176,11 @@ WebHID won because it is the only option with zero install and a stable API for 
 * `0x0D` is the Fn-layer key patch over the dongle, decoded in Tests 19 and 20. Internal types 5 and
   8–11, and macro records, are undecoded and not needed.
 * Commit reply byte 4 (`0x77`) — unexplained.
-* `t_config_data.fn_layer` / `fn_switch` — unknown meaning.
+* `t_config_data.fn_layer` / `fn_switch` - unknown meaning.
+* Music mode - the vendor's Music Rhythm tab is a layer, a reactive foreground over a background mode
+  and brightness, driven by audio analysed on the PC. Supporting it would mean a page that stays open
+  plus microphone or window-audio capture, the opposite of a zero-install configurator. Deferred
+  rather than rejected: a beta is possible if the protocol turns out to be a small level value. What
+  would settle it is one capture with that tab open and an effect running. GitHub issue #4.
 * The driver is a Vite and React app in `src/`. Vendor artwork, layout XML and the installer stay
   private and are not distributed.

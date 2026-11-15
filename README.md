@@ -109,6 +109,10 @@ map, and there is no read-back, so the panel shows the map you last sent.
 The knob is input-only, so it cannot be remapped. Bluetooth mode does not expose the
 configuration interface.
 
+The vendor app's Music Rhythm mode is not here. It reacts to audio, but the audio is analysed on the
+PC, so it needs a resident program and permission to capture a microphone or a window's audio. This
+page sets the keyboard and you close it, so that mode is out of scope for now.
+
 ## Requirements
 
 - Chrome, Edge or Opera on desktop. Firefox, Safari and mobile browsers do not support WebHID.

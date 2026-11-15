@@ -397,6 +397,11 @@ Falling, Colourful, Breath, Spectrum, Outward, Scrolling, Rolling, Rotating, Exp
 Ripples, Flowing, Pulsating, Tilt, Shuttle, LED off. LED off (20) is a zeroed record with only the
 trailer.
 
+The vendor app also has a Music Rhythm tab, which layers a sound-reactive foreground over one of
+these modes. It is not decoded here: the audio is analysed on the PC, so it needs a resident
+application and a capture source, and no capture of that tab has been taken. `docs/06-history.md`
+records why it is out of scope for now.
+
 The vendor database gives each mode its controls in `config_func`. The bits: `0x01` brightness,
 `0x02` speed, `0x04` horizontal direction, `0x08` vertical direction, `0x10` colour, `0x20`
 colourful. Static is `0x31` and has no speed; Colourful and Spectrum are `0x03`, always multi-colour
