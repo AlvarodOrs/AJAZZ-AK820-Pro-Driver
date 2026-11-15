@@ -4,6 +4,9 @@ Everything here was decoded for interoperability from the vendor application and
 keyboard. Addresses refer to the vendor disassembly, which is kept in the private research
 repository and is **not** part of this project.
 
+The captures named below live in that repository under `re/captures/`, and `re/captures/INDEX.md`
+there maps each file to the fact it proves.
+
 ---
 
 ## 1. Device and interface
