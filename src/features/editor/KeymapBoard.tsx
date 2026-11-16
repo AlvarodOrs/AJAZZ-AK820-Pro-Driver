@@ -69,7 +69,7 @@ export function KeymapBoard({ rows, layer, selected, disabled, onSelect }: Keyma
                 const pending = row.usage !== row.applied || row.media !== row.appliedMedia;
                 const custom = row.usage !== row.factory || row.media !== row.factoryMedia;
                 const isSelected = selected === row.idx;
-                const label = row.usage ? usageLabel(row.usage, row.media) : keycapLabel(row.name);
+                const label = custom ? usageLabel(row.usage, row.media) : keycapLabel(row.name);
 
                 const title = locked
                   ? `${row.name}. Key index ${row.idx}. The firmware owns this Fn combination.`
